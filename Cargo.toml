@@ -1,0 +1,12 @@
+[package]
+name = "google-banner-palette"
+version = "0.1.0"
+authors = ["Christian Blades <cblades@pindrop.com>"]
+
+[dependencies]
+exoquant = "0.2.0"
+image = "0.19.0"
+hyper = "0.12.5"
+hyper-rustls = "0.13.0"
+kuchiki = "0.7.0"
+tokio = "0.1.7"
