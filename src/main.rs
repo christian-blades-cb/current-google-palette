@@ -5,18 +5,42 @@ extern crate image;
 extern crate kuchiki;
 extern crate termion;
 extern crate tokio;
+#[macro_use]
+extern crate serde_json;
+#[macro_use]
+extern crate serde_derive;
+extern crate toml;
 
 use exoquant::{optimizer, Color, Histogram, SimpleColorSpace};
-use hyper::Client;
 use hyper::rt::{self, Future, Stream};
+use hyper::{header, Body, Client, Method, Request};
 use image::Pixel;
 use kuchiki::traits::*;
+use std::fs::File;
+use std::io::BufReader;
+use std::io::prelude::*;
 use termion::color::{self, Rgb};
+
+#[derive(Debug, Deserialize)]
+struct Config {
+    lights_endpoint: String,
+}
 
 fn main() {
     let css_selector = r#"meta[itemprop="image"]"#;
     let uri = "http://www.google.com/".parse().unwrap();
-    let client = Client::new();
+    let https = hyper_rustls::HttpsConnector::new(4);
+    let client = Client::builder().build(https);
+    let lights_client = client.clone();
+
+    let conf: Config = {
+        let conf_fd = File::open("banner.toml").unwrap();
+        let mut conf_buf = BufReader::new(conf_fd);
+        let mut contents: Vec<u8> = Vec::new();
+        conf_buf.read_to_end(&mut contents).unwrap();
+        toml::from_slice(&contents).unwrap()
+    };
+    let lights_url = conf.lights_endpoint.parse().unwrap();
 
     let goog_daily_banner_uri_future = client
         .get(uri)
@@ -78,8 +102,31 @@ fn main() {
                 print!("{}██████", color::Fg(Rgb(c.r, c.g, c.b)));
             }
             print!("{}\n", color::Fg(color::Reset));
-        })
-        .map_err(|err| println!("Error: {}", err));
 
-    rt::run(banner_img_fut);
+            palette
+        });
+
+    let change_lights_fut = banner_img_fut
+        .and_then(move |palette| {
+            let color1 = palette.get(0).unwrap();
+            let color2 = palette.get(1).unwrap();
+
+            let payload = json!({
+                "color1": format!("#{:02x}{:02x}{:02x}", color1.r, color1.g, color1.b),
+                "color2": format!("#{:02x}{:02x}{:02x}", color2.r, color2.g, color2.b),
+            });
+            let mut req = Request::new(Body::from(payload.to_string()));
+            *req.uri_mut() = lights_url;
+            *req.method_mut() = Method::POST;
+            req.headers_mut().insert(
+                "content-type",
+                header::HeaderValue::from_str("application/json").unwrap(),
+            );
+
+            lights_client.request(req)
+        })
+        .map(|resp| println!("status: {}", resp.status()))
+        .map_err(|err| println!("error while changing lights: {}", err));
+
+    rt::run(change_lights_fut);
 }
