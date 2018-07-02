@@ -3,6 +3,7 @@ extern crate hyper;
 extern crate hyper_rustls;
 extern crate image;
 extern crate kuchiki;
+extern crate termion;
 extern crate tokio;
 
 use exoquant::{optimizer, Color, Histogram, SimpleColorSpace};
@@ -10,9 +11,9 @@ use hyper::Client;
 use hyper::rt::{self, Future, Stream};
 use image::Pixel;
 use kuchiki::traits::*;
+use termion::color::{self, Rgb};
 
 fn main() {
-    // let css_selector = "meta[itemprop=image]";
     let css_selector = r#"meta[itemprop="image"]"#;
     let uri = "http://www.google.com/".parse().unwrap();
     let client = Client::new();
@@ -72,6 +73,11 @@ fn main() {
             for c in palette.iter() {
                 println!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b);
             }
+
+            for c in palette.iter() {
+                print!("{}██████", color::Fg(Rgb(c.r, c.g, c.b)));
+            }
+            print!("{}\n", color::Fg(color::Reset));
         })
         .map_err(|err| println!("Error: {}", err));
 
