@@ -19,6 +19,7 @@ use hyper::rt::{self, Future, Stream};
 use hyper::{header, Body, Client, Method, Request, Uri};
 use image::Pixel;
 use kuchiki::traits::*;
+use std::cmp::{max, min};
 use std::fs::File;
 use std::io::BufReader;
 use std::io::prelude::*;
@@ -41,7 +42,8 @@ fn main() {
                 .help("sets a custom config file")
                 .default_value("banner.toml"),
         )
-        .arg(Arg::with_name("push").short("p").long("push"))
+        .arg(Arg::with_name("push").short("p").long("push").help("push to hue endpoint"))
+        .arg(Arg::with_name("colors").short("r").long("colors").help("number of colors in the palette (only the first two will be pushed to hue endpoint)").default_value("4"))
         .subcommand(SubCommand::with_name("google").about("fetches from google's daily banner"))
         .subcommand(SubCommand::with_name("natgeo").about("fetches from natgeo's daily images"))
         .get_matches();
@@ -55,12 +57,21 @@ fn main() {
         toml::from_slice(&contents).unwrap()
     };
     let lights_url: Uri = conf.lights_endpoint.parse().unwrap();
+    let mut colors: usize = matches
+        .value_of("colors")
+        .unwrap_or("4")
+        .parse()
+        .unwrap_or(4);
+    if colors < 2 {
+        colors = 2;
+    }
 
     match matches.subcommand_name() {
         Some("google") => {
-            let fut = google_banner_daily().map(|body| {
+            let goog_colors = colors.clone();
+            let fut = google_banner_daily().map(move |body| {
                 let bytes: &[u8] = &body.into_bytes();
-                let palette = img_to_palette(bytes);
+                let palette = img_to_palette(bytes, goog_colors);
 
                 palette_to_terminal(&palette);
                 palette
@@ -77,9 +88,10 @@ fn main() {
             }
         }
         Some("natgeo") => {
-            let fut = natgeo_daily().map(|body| {
+            let nat_colors = colors.clone();
+            let fut = natgeo_daily().map(move |body| {
                 let bytes: &[u8] = &body.into_bytes();
-                let palette = img_to_palette(bytes);
+                let palette = img_to_palette(bytes, nat_colors);
 
                 palette_to_terminal(&palette);
                 palette
@@ -98,7 +110,6 @@ fn main() {
         None => println!("no option selected, bye"),
         Some(&_) => unimplemented!(),
     }
-    // rt::run(change_lights_fut);
 }
 
 fn google_banner_daily() -> impl Future<Item = hyper::Chunk, Error = hyper::Error> {
@@ -134,7 +145,7 @@ fn google_banner_daily() -> impl Future<Item = hyper::Chunk, Error = hyper::Erro
     fut
 }
 
-fn img_to_palette(img: &[u8]) -> Vec<Color> {
+fn img_to_palette(img: &[u8], colors: usize) -> Vec<Color> {
     let img = image::load_from_memory(img).unwrap();
     let rgba = match img {
         image::DynamicImage::ImageRgba8(pxls) => pxls,
@@ -154,7 +165,7 @@ fn img_to_palette(img: &[u8]) -> Vec<Color> {
         &histogram,
         &SimpleColorSpace::default(),
         &optimizer::KMeans,
-        4,
+        colors,
     );
     palette
 }
@@ -174,8 +185,8 @@ fn palette_to_lights(palette: &Vec<Color>, lights_url: Uri) -> Box<hyper::client
     let https = hyper_rustls::HttpsConnector::new(4);
     let client = Client::builder().build(https);
 
-    let color1 = palette.get(0).unwrap();
-    let color2 = palette.get(1).unwrap();
+    let color1 = calibrate_for_knockoff_lights(palette.get(0).unwrap());
+    let color2 = calibrate_for_knockoff_lights(palette.get(1).unwrap());
     let payload = json!({
                 "color1": format!("#{:02x}{:02x}{:02x}", color1.r, color1.g, color1.b),
                 "color2": format!("#{:02x}{:02x}{:02x}", color2.r, color2.g, color2.b),
@@ -193,12 +204,25 @@ fn palette_to_lights(palette: &Vec<Color>, lights_url: Uri) -> Box<hyper::client
     Box::new(fut)
 }
 
+fn calibrate_for_knockoff_lights(c: &Color) -> Color {
+    let r = max(2, min(c.r, 254));
+    let g = max(2, min(c.g, 254));
+    let b = max(2, min(c.b, 254));
+
+    let r = (r as f32 * 0.8f32) as u8;
+    let g = (g as f32 * 0.4f32) as u8;
+    let b = (b as f32 * 0.1569f32) as u8;
+
+    Color::new(r, g, b, 255)
+}
+
 fn natgeo_daily() -> impl Future<Item = hyper::Chunk, Error = hyper::Error> {
     let selector = r#"meta[name="image"][property="og:image"]"#;
     let uri = "http://yourshot.nationalgeographic.com/daily-dozen/"
         .parse()
         .unwrap();
-    let client = Client::new();
+    let https = hyper_rustls::HttpsConnector::new(4);
+    let client: Client<_, hyper::Body> = Client::builder().build(https);
 
     let fut = client
         .get(uri)
